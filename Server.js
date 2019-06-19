@@ -19,7 +19,7 @@ let app = express();
 
 //静态文件
 // http://exapmle.com/static.file
-app.use(express.static('./public'));
+app.use(express.static('upload'));
 //seesion中间件
 app.use(session({
     secret: 'secret', // 对session id 相关的cookie 进行签名
@@ -153,26 +153,26 @@ app.post('/uploadInfo', bodyParser.json(), function (req, res, next) {
     } else {
         role = -1;
     }
-    if (role < 2) {
-        //权限不足
-        res.json({
-            code: -1,
-            msg: '操作权限不足'
-        })
+    if ( /*role < 2*/ false) {
+        // //权限不足
+        // res.json({
+        //     code: -1,
+        //     msg: '操作权限不足'
+        // })
     } else {
         //入库
         let data = req.body;
         let sqlString = 'INSERT INTO `course` SET ?';
         let sqlParam = {
             id: 'default',
-            uploader_id: JSON.parse(req.session.account).id,
+            uploader_id: 1, //JSON.parse(req.session.account).id,
             title: data.title,
             description: data.description,
             grade: data.grade,
             tags: data.tags.length ? JSON.stringify(data.tags) : null,
             dir: null,
             duration: null,
-            cover: 'default',
+            cover: 2, //默认pic_2.jpg
             status: 0,
             upload_date: sd.format(new Date(), 'YYYY-MM-DD HH:mm:ss')
         };
@@ -182,7 +182,7 @@ app.post('/uploadInfo', bodyParser.json(), function (req, res, next) {
                 req.session.insertId = rs.insertId;
                 res.json({
                     code: 1,
-                    msg: ''
+                    msg: '信息已保存'
                 })
             })
             .catch(err => {
@@ -201,7 +201,7 @@ let multer = require('multer');
 let upload = multer({
     storage: multer.diskStorage({
         destination: function (req, file, cb) {
-            let dir = 'upload/' + req.sessionID;
+            let dir = 'upload_tmp/';
             if (!fs.existsSync(dir)) {
                 fs.mkdirSync(dir, (err) => {
                     if (err) {
@@ -209,7 +209,7 @@ let upload = multer({
                             code: -1,
                             msg: '创建目录失败'
                         });
-                        logUtil('[upload/' + req.sessionID + ']' + '无法创建对应目录', LOG_DIR)
+                        logUtil('[upload_tmp/]' + '无法创建对应目录', LOG_DIR)
                         return;
                     }
                 });
@@ -223,27 +223,131 @@ let upload = multer({
     })
 });
 app.post('/uploadFile', upload.any(), function (req, res, next) {
-    //整理
-    let dir = 'upload/' + req.sessionID;
-    for (let l = req.files.length, i = 0; i < l; i++) {
-        copyUtil(req.files[i], i === 0 ? (dir + '/course') : (dir + '/attachments'), true); //第一个文件为课程视频，其余归类为附件
-    }
-    sqlQuery('UPDATE `course` SET ?', {
-        dir,
-        status: 1
-    }).then(rs => {
+    const main = async () => {
+        //整理
+        let flag = new Date().getTime(); //以时间戳作为文件夹名
+        let dir = 'upload/' + flag,
+            file_path = null;
+        for (let l = req.files.length, i = 0; i < l; i++) {
+            // copyUtil(req.files[i], i === 0 ? (dir + '/course') : (dir + '/attachments'), 'course', true); //第一个文件为课程视频，其余归类为附件
+            if (i == 0) {
+                file_path = copyUtil(req.files[i], dir + '/course', 'course', true);
+            } else {
+                copyUtil(req.files[i], dir + '/attachments', null, true);
+            }
+        }
+        //写入时长与生成缩略图
+        const mediaHandler = new FFMPEGOperation();
+        const duration = await mediaHandler.getVideoTotalDuration(file_path);
+        //缩略图
+        const coverDir = 'upload/' + flag + '/cover';
+        fs.mkdirSync(coverDir, () => {});
+        await mediaHandler.getVideoSceenshots(file_path, coverDir, '640x360', 20, 3);
+
+        //写入数据库
+        const courseId = await sqlQuery('UPDATE `course` SET `duration`=? , `dir`=? , `status`=? WHERE `id`=? ', [
+            duration,
+            flag,
+            1,
+            req.session.insertId
+        ]);
         res.json({
             code: 1,
-            msg: rs.insertId //返回课程id
+            msg: courseId //返回课程id
         })
-    }).catch(err => {
-        console.log(err);
-        res.json({
-            code: -1,
-            msg: '数据库写入失败  '
-        })
-    })
+        // sqlQuery('UPDATE `course` SET `duration`=? , `dir`=? , `status`=? WHERE `id`=? ', [
+        //     duration,
+        //     dir,
+        //     1,
+        //     req.session.insertId
+        // ]).then(rs => {
+        //     res.json({
+        //         code: 1,
+        //         msg: rs.insertId //返回课程id
+        //     })
+        // }).catch(err => {
+        //     console.log(err);
+        //     res.json({
+        //         code: -1,
+        //         msg: '数据库写入失败  '
+        //     })
+        // })
+        // const mediaHandler = new FFMPEGOperation();
+        // mediaHandler.getVideoTotalDuration(file_path).then(rs => {
+        //     console.log(rs);
+        //     sqlQuery('UPDATE `course` SET ?', {
+        //         duration: rs,
+        //         dir,
+        //         status: 1
+        //     }).then(rs => {
+        //         res.json({
+        //             code: 1,
+        //             msg: rs.insertId //返回课程id
+        //         })
+        //     }).catch(err => {
+        //         console.log(err);
+        //         res.json({
+        //             code: -1,
+        //             msg: '数据库写入失败  '
+        //         })
+        //     })
+        // })
+
+
+        // const FFMPEGOperation = require('./ffmpeg_op')
+        // const FFMPEGOperationObj = new FFMPEGOperation()
+        // const videoPath = './input/test.mp4'
+        // const outputPath = './output/'
+        // //获取视频时长
+        // const duration = await FFMPEGOperationObj.getVideoTotalDuration(videoPath)
+        // console.log(duration)
+        // //获取缩略图
+        // await FFMPEGOperationObj.getVideoSceenshots(videoPath, outputPath, 1, 5)
+        // //拆分视频
+        // await FFMPEGOperationObj.splitVideo(videoPath, 100, 10, outputPath + 'splitResult.mp4')
+    }
+    main().then().catch(console.error)
+
+
+
 });
+//课程配置
+// app.get('/courseConfig', (req, res) => {
+//     console.log(req.query);
+//     let sqlString = "SELECT * FROM `course` WHERE ?";
+//     let sqlParam = {
+//         id: req.query.courseID
+//     };
+//     sqlQuery(sqlString, sqlParam).then(rs => {
+//             if (rs.length > 0) {
+//                 console.log(rs);
+//                 if (rs[0].uploader_id == req.query.userID) {
+//                     res.json({
+//                         code: 1,
+//                         msg: JSON.stringify(rs[0])
+//                     })
+//                 } else {
+//                     res.json({
+//                         code: -1,
+//                         msg: '你无权修改该课程配置'
+//                     })
+//                 }
+//             } else {
+//                 res.json({
+//                     code: -1,
+//                     msg: '未查询到相关信息'
+//                 })
+//             }
+//         })
+//         .catch(err => {
+//             console.log(err)
+//             res.json({
+//                 code: -1,
+//                 msg: '数据库查询失败'
+//             })
+//         })
+
+// })
 //中断，删除相关数据
 app.get('/uploadCancel', (req, res) => {
     //数据库
@@ -256,10 +360,9 @@ app.get('/uploadCancel', (req, res) => {
         deleteFolder('upload/' + req.sessionID);
     });
 })
-//设定监听端口, 和回调函数
-app.listen(9001, function afterListen() {
-    console.log('express running on http://localhost:9001');
-});
+
+
+//最新上传
 app.get('/lastest', (req, res) => {
     sqlQuery("SELECT * FROM `course` ORDER BY `id` DESC limit 5", {}).then(rs => {
         res.json({
@@ -269,6 +372,16 @@ app.get('/lastest', (req, res) => {
     })
 })
 
+
+///
+///
+///
+//设定监听端口, 和回调函数
+app.listen(9001, function afterListen() {
+    console.log('express running on http://localhost:9001');
+});
+
+
 /* 
 ***
 公共函数区
@@ -277,10 +390,10 @@ app.get('/lastest', (req, res) => {
 
 // const mediaHandler = new FFMPEGOperation();
 // console.log(mediaHandler.getVideoTotalDuration('upload/F8ZI2Ys4RJfWcogA8VmS1hL9faYXabI7/course/窈窕淑女.rmvb'))
-const mediaHandler = new FFMPEGOperation();
-mediaHandler.getVideoTotalDuration('upload/F8ZI2Ys4RJfWcogA8VmS1hL9faYXabI7/course/窈窕淑女.rmvb').then(rs => {
-    console.log(rs);
-})
+// const mediaHandler = new FFMPEGOperation();
+// mediaHandler.getVideoTotalDuration('upload/F8ZI2Ys4RJfWcogA8VmS1hL9faYXabI7/course/lionking2018_tvspot_1280.mp4').then(rs => {
+//     console.log(rs);
+// })
 
 
 //鉴权
@@ -328,3 +441,8 @@ function deleteFolder(path) {
         fs.rmdirSync(path);
     }
 }
+
+//保证服务不会down掉
+process.on('uncaughtException', function (err) {
+    log(err);
+});
